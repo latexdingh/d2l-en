@@ -1,40 +1,62 @@
 #!/bin/bash
+# Build script for PyTorch framework version of d2l-en
+set -e
 
-set -ex
+# Source environment variables
+SOURCE_DIR=$(dirname "$0")
+source "$SOURCE_DIR/../actions/setup_env_vars/action.yml" 2>/dev/null || true
 
-# Used to capture status exit of build eval command
-ss=0
+echo "========================================"
+echo "Building d2l-en (PyTorch)"
+echo "========================================"
 
-REPO_NAME="$1"  # Eg. 'd2l-en'
-TARGET_BRANCH="$2" # Eg. 'master' ; if PR raised to master
-CACHE_DIR="$3"  # Eg. 'ci_cache_pr' or 'ci_cache_push'
-
-pip3 install .
-mkdir _build
-
-source $(dirname "$0")/utils.sh
-
-# Move sanity check outside
-d2lbook build outputcheck tabcheck
-
-# Move aws copy commands for cache restore outside
-if [ "$DISABLE_CACHE" = "false" ]; then
-  echo "Retrieving pytorch build cache from "$CACHE_DIR""
-  measure_command_time "aws s3 sync s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build/eval _build/eval --delete --quiet --exclude 'data/*'"
-  echo "Retrieving pytorch slides cache from "$CACHE_DIR""
-  aws s3 sync s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build/slides _build/slides --delete --quiet --exclude 'data/*'
+# Check required environment variables
+if [ -z "$REPO_DIR" ]; then
+    REPO_DIR=$(pwd)
 fi
 
-# Continue the script even if some notebooks in build fail to
-# make sure that cache is copied to s3 for the successful notebooks
-d2lbook build eval || ((ss=1))
-d2lbook build slides --tab pytorch
-
-# Move aws copy commands for cache store outside
-echo "Upload pytorch build cache to s3"
-measure_command_time "aws s3 sync _build s3://preview.d2l.ai/"$CACHE_DIR"/"$REPO_NAME"-"$TARGET_BRANCH"/_build --acl public-read --quiet --exclude 'eval*/data/*'"
-
-# Exit with a non-zero status if evaluation failed
-if [ "$ss" -ne 0 ]; then
-  exit 1
+if [ -z "$OUTPUT_DIR" ]; then
+    OUTPUT_DIR="$REPO_DIR/_build/pytorch"
 fi
+
+echo "Repository directory: $REPO_DIR"
+echo "Output directory: $OUTPUT_DIR"
+
+# Install dependencies
+echo "Installing Python dependencies..."
+pip install torch torchvision --quiet
+pip install d2l --quiet
+pip install sphinx myst-parser sphinx-book-theme --quiet
+
+# Verify PyTorch installation
+python -c "import torch; print(f'PyTorch version: {torch.__version__}')" || {
+    echo "ERROR: PyTorch installation failed"
+    exit 1
+}
+
+# Set framework environment variable
+export FRAMEWORK=pytorch
+
+# Navigate to repo directory
+cd "$REPO_DIR"
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Execute notebooks with PyTorch backend
+echo "Executing notebooks..."
+if [ -f "config.ini" ]; then
+    echo "Found config.ini, using project configuration"
+fi
+
+# Build HTML output
+echo "Building HTML documentation..."
+make pytorch 2>&1 | tee "$OUTPUT_DIR/build.log" || {
+    echo "ERROR: Build failed. Check $OUTPUT_DIR/build.log for details"
+    exit 1
+}
+
+echo "========================================"
+echo "Build completed successfully"
+echo "Output available at: $OUTPUT_DIR"
+echo "========================================"
